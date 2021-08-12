@@ -82,5 +82,40 @@ public interface Headers {
     //是否属性为部分属性,如果为true,在列式存储策略下,将会把之前上报的属性合并到一起进行存储.
     HeaderKey<Boolean> partialProperties = HeaderKey.of("partialProperties", false, Boolean.class);
 
+    /**
+     * 是否开启追踪,开启后header中将添加各个操作的时间戳
+     *
+     * @see org.jetlinks.core.utils.DeviceMessageTracer
+     */
     HeaderKey<Boolean> enableTrace = HeaderKey.of("_trace", Boolean.getBoolean("device.message.trace.enabled"), Boolean.class);
+
+    /**
+     * 标记数据不存储
+     *
+     * @see org.jetlinks.core.message.property.ReadPropertyMessage
+     * @see org.jetlinks.core.message.property.ReadPropertyMessageReply
+     * @see org.jetlinks.core.message.property.WritePropertyMessageReply
+     * @since 1.1.6
+     */
+    HeaderKey<Boolean> ignoreStorage = HeaderKey.of("ignoreStorage", false, Boolean.class);
+
+    /**
+     * 忽略记录日志
+     */
+    HeaderKey<Boolean> ignoreLog = HeaderKey.of("ignoreLog", false, Boolean.class);
+
+    /**
+     * 忽略某些操作,具体由不同的消息决定
+     */
+    HeaderKey<Boolean> ignore = HeaderKey.of("ignore", false, Boolean.class);
+
+    /**
+     * 忽略会话创建,如果设备未在线,默认为创建会话,设置此header为true后则不会自动创建会话.
+     */
+    HeaderKey<Boolean> ignoreSession = HeaderKey.of("ignoreSession", false, Boolean.class);
+
+    /**
+     * 产品ID
+     */
+    HeaderKey<String> productId = HeaderKey.of("productId", null, String.class);
 }

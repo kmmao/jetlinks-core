@@ -5,6 +5,9 @@ import org.jetlinks.core.message.codec.DeviceMessageCodec;
 import org.jetlinks.core.message.codec.Transport;
 import org.jetlinks.core.message.interceptor.DeviceMessageSenderInterceptor;
 import org.jetlinks.core.metadata.*;
+import org.jetlinks.core.server.ClientConnection;
+import org.jetlinks.core.server.DeviceGatewayContext;
+import org.springframework.core.Ordered;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -18,7 +21,7 @@ import java.util.Map;
  * @author zhouhao
  * @since 1.0.0
  */
-public interface ProtocolSupport extends Disposable {
+public interface ProtocolSupport extends Disposable, Ordered, Comparable<ProtocolSupport> {
     /**
      * @return 协议ID
      */
@@ -66,7 +69,7 @@ public interface ProtocolSupport extends Disposable {
      * <ul>
      * <li>用于将平台统一的设备定义规范转码为协议的规范</li>
      * <li>用于将协议的规范转为平台统一的设备定义规范</li>
-     * *
+     *
      * </ul>
      *
      * @return 物模型编解码器
@@ -228,5 +231,96 @@ public interface ProtocolSupport extends Disposable {
      */
     default Mono<Void> onProductUnRegister(DeviceProductOperator operator) {
         return Mono.empty();
+    }
+
+    /**
+     * 当产品物模型变更时调用
+     *
+     * @param operator 产品操作接口
+     * @return void
+     * @since 1.1.6
+     */
+    default Mono<Void> onProductMetadataChanged(DeviceProductOperator operator) {
+        return Mono.empty();
+    }
+
+    /**
+     * 当设备物模型变更时调用
+     *
+     * @param operator 设备操作接口
+     * @return void
+     * @since 1.1.6
+     */
+    default Mono<Void> onDeviceMetadataChanged(DeviceOperator operator) {
+        return Mono.empty();
+    }
+
+    /**
+     * 客户端创建连接时调用,返回设备ID,表示此设备上线.
+     *
+     * @param transport  传输协议
+     * @param connection 客户端连接
+     * @return void
+     * @since 1.1.6
+     */
+    default Mono<Void> onClientConnect(Transport transport,
+                                       ClientConnection connection,
+                                       DeviceGatewayContext context) {
+        return Mono.empty();
+    }
+
+    /**
+     * 触发手动绑定子设备到网关设备
+     *
+     * @param gateway 网关
+     * @param child   子设备流
+     * @return void
+     * @since 1.1.6
+     */
+    default Mono<Void> onChildBind(DeviceOperator gateway, Flux<DeviceOperator> child) {
+        return Mono.empty();
+    }
+
+    /**
+     * 触发手动接触绑定子设备到网关设备
+     *
+     * @param gateway 网关
+     * @param child   子设备流
+     * @return void
+     * @since 1.1.6
+     */
+    default Mono<Void> onChildUnbind(DeviceOperator gateway, Flux<DeviceOperator> child) {
+        return Mono.empty();
+    }
+
+    /**
+     * 获取协议支持的某些自定义特性
+     *
+     * @return 特性集
+     * @since 1.1.6
+     */
+    default Flux<Feature> getFeatures(Transport transport) {
+        return Flux.empty();
+    }
+
+    /**
+     * 在执行设备创建之前,执行指定的操作。通常用于自定义默认配置生成等操作
+     *
+     * @param deviceInfo 设备信息
+     * @return 新等设备信息
+     */
+    default Mono<DeviceInfo> doBeforeDeviceCreate(Transport transport,
+                                                  DeviceInfo deviceInfo) {
+        return Mono.just(deviceInfo);
+    }
+
+    @Override
+    default int getOrder() {
+        return Integer.MAX_VALUE;
+    }
+
+    @Override
+    default int compareTo(@Nonnull ProtocolSupport o) {
+        return Integer.compare(this.getOrder(), o.getOrder());
     }
 }

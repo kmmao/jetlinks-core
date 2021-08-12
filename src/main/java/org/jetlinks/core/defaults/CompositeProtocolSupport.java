@@ -8,22 +8,19 @@ import org.jetlinks.core.device.*;
 import org.jetlinks.core.message.codec.DeviceMessageCodec;
 import org.jetlinks.core.message.codec.Transport;
 import org.jetlinks.core.message.interceptor.DeviceMessageSenderInterceptor;
-import org.jetlinks.core.metadata.ConfigMetadata;
-import org.jetlinks.core.metadata.DeviceMetadata;
-import org.jetlinks.core.metadata.DeviceMetadataCodec;
-import org.jetlinks.core.metadata.DeviceMetadataType;
+import org.jetlinks.core.metadata.*;
+import org.jetlinks.core.server.ClientConnection;
+import org.jetlinks.core.server.DeviceGatewayContext;
 import reactor.core.Disposable;
 import reactor.core.Disposables;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import javax.annotation.Nonnull;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -74,8 +71,23 @@ public class CompositeProtocolSupport implements ProtocolSupport {
 
     private Function<DeviceOperator, Mono<Void>> onDeviceRegister;
     private Function<DeviceOperator, Mono<Void>> onDeviceUnRegister;
+    private Function<DeviceOperator, Mono<Void>> onDeviceMetadataChanged;
+
     private Function<DeviceProductOperator, Mono<Void>> onProductRegister;
     private Function<DeviceProductOperator, Mono<Void>> onProductUnRegister;
+    private Function<DeviceProductOperator, Mono<Void>> onProductMetadataChanged;
+
+    private BiFunction<DeviceOperator, Flux<DeviceOperator>, Mono<Void>> onChildBind;
+    private BiFunction<DeviceOperator, Flux<DeviceOperator>, Mono<Void>> onChildUnbind;
+
+    private Map<String, Function<DeviceInfo, Mono<DeviceInfo>>> onBeforeCreate = new ConcurrentHashMap<>();
+
+    private Map<String, BiFunction<ClientConnection, DeviceGatewayContext, Mono<Void>>> connectionHandlers = new ConcurrentHashMap<>();
+
+    private Map<String, Flux<Feature>> features = new ConcurrentHashMap<>();
+    private List<Feature> globalFeatures = new CopyOnWriteArrayList<>();
+
+    private int order = Integer.MAX_VALUE;
 
     @Override
     public void dispose() {
@@ -277,6 +289,36 @@ public class CompositeProtocolSupport implements ProtocolSupport {
         return this;
     }
 
+    public CompositeProtocolSupport doOnProductMetadataChanged(Function<DeviceProductOperator, Mono<Void>> executor) {
+        this.onProductMetadataChanged = executor;
+        return this;
+    }
+
+    public CompositeProtocolSupport doOnDeviceMetadataChanged(Function<DeviceOperator, Mono<Void>> executor) {
+        this.onDeviceMetadataChanged = executor;
+        return this;
+    }
+
+    /**
+     * 监听客户端连接,只有部分协议支持此操作,如:
+     * <pre>
+     * support.doOnClientConnect(TCP,(connection,context)->{
+     *  //客户端创建连接时,发送消息给客户端
+     *  return connection
+     *   .sendMessage(createHelloMessage())
+     *    .then();
+     *  })
+     * </pre>
+     *
+     * @param transport 通信协议,如: {@link org.jetlinks.core.message.codec.DefaultTransport#TCP}
+     * @param handler   处理器
+     * @since 1.1.6
+     */
+    public void doOnClientConnect(Transport transport,
+                                  BiFunction<ClientConnection, DeviceGatewayContext, Mono<Void>> handler) {
+        connectionHandlers.put(transport.getId(), handler);
+    }
+
     @Override
     public Mono<Void> onDeviceRegister(DeviceOperator operator) {
         return onDeviceRegister != null ? onDeviceRegister.apply(operator) : Mono.empty();
@@ -295,5 +337,121 @@ public class CompositeProtocolSupport implements ProtocolSupport {
     @Override
     public Mono<Void> onProductUnRegister(DeviceProductOperator operator) {
         return onProductUnRegister != null ? onProductUnRegister.apply(operator) : Mono.empty();
+    }
+
+    @Override
+    public Mono<Void> onDeviceMetadataChanged(DeviceOperator operator) {
+        return onDeviceMetadataChanged != null ? onDeviceMetadataChanged.apply(operator) : Mono.empty();
+    }
+
+    @Override
+    public Mono<Void> onProductMetadataChanged(DeviceProductOperator operator) {
+        return onProductMetadataChanged != null ? onProductMetadataChanged.apply(operator) : Mono.empty();
+    }
+
+    public void doOnChildBind(BiFunction<DeviceOperator, Flux<DeviceOperator>, Mono<Void>> onChildBind) {
+        this.onChildBind = onChildBind;
+    }
+
+    public void doOnChildUnbind(BiFunction<DeviceOperator, Flux<DeviceOperator>, Mono<Void>> onChildUnbind) {
+        this.onChildUnbind = onChildUnbind;
+    }
+
+    @Override
+    public Mono<Void> onClientConnect(Transport transport,
+                                      ClientConnection connection,
+                                      DeviceGatewayContext context) {
+        BiFunction<ClientConnection, DeviceGatewayContext, Mono<Void>> function = connectionHandlers.get(transport.getId());
+        if (function == null) {
+            return Mono.empty();
+        }
+        return function.apply(connection, context);
+    }
+
+    @Override
+    public Mono<Void> onChildBind(DeviceOperator gateway, Flux<DeviceOperator> child) {
+        return onChildBind == null ? Mono.empty() : onChildBind.apply(gateway, child);
+    }
+
+    @Override
+    public Mono<Void> onChildUnbind(DeviceOperator gateway, Flux<DeviceOperator> child) {
+        return onChildUnbind == null ? Mono.empty() : onChildUnbind.apply(gateway, child);
+    }
+
+    /**
+     * 给指定的Transport添加Feature
+     *
+     * @param features Feature
+     */
+    public void addFeature(Transport transport, Feature... features) {
+        addFeature(transport, Flux.just(features));
+    }
+
+    /**
+     * 给指定的Transport添加Feature
+     *
+     * @param features Feature
+     */
+    public void addFeature(Transport transport, Iterable<Feature> features) {
+        addFeature(transport, Flux.fromIterable(features));
+    }
+
+    /**
+     * 给指定的Transport添加Feature
+     *
+     * @param features Feature
+     */
+    public void addFeature(Transport transport, Flux<Feature> features) {
+        this.features.put(transport.getId(), features);
+    }
+
+    /**
+     * 添加全局Feature
+     *
+     * @param features Feature
+     * @see MetadataFeature
+     * @see ManagementFeature
+     */
+    public void addFeature(Feature... features) {
+        addFeature(Arrays.asList(features));
+    }
+
+    /**
+     * 添加全局Feature
+     *
+     * @param features Feature
+     */
+    public void addFeature(Iterable<Feature> features) {
+        features.forEach(globalFeatures::add);
+    }
+
+    /**
+     * 注册设备添加监听器,用于在创建设备时,进行自定义配置生成等操作.
+     *
+     * @param transport 传输协议
+     * @param listener  监听器
+     * @since 1.1.8
+     */
+    public void onBeforeDeviceCreate(Transport transport, Function<DeviceInfo, Mono<DeviceInfo>> listener) {
+        onBeforeCreate.put(transport.getId(), listener);
+    }
+
+    @Override
+    public Mono<DeviceInfo> doBeforeDeviceCreate(Transport transport, DeviceInfo deviceInfo) {
+        Function<DeviceInfo, Mono<DeviceInfo>> listener = onBeforeCreate.get(transport.getId());
+        if (null != listener) {
+            return listener.apply(deviceInfo);
+        }
+        return ProtocolSupport.super.doBeforeDeviceCreate(transport, deviceInfo);
+    }
+
+    @Override
+    public Flux<Feature> getFeatures(Transport transport) {
+        return Flux
+                .concat(
+                        Flux.fromIterable(globalFeatures),
+                        features.getOrDefault(transport.getId(), Flux.empty())
+                )
+                .distinct(Feature::getId);
     }
 }

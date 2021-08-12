@@ -13,7 +13,7 @@ import reactor.core.publisher.Mono;
  * @see org.jetlinks.core.device.DeviceMessageSender
  * @since 1.0.0
  */
-public interface DeviceMessageSenderInterceptor {
+public interface DeviceMessageSenderInterceptor  {
 
     DeviceMessageSenderInterceptor DO_NOTING = new DeviceMessageSenderInterceptor() {
     };
@@ -30,7 +30,7 @@ public interface DeviceMessageSenderInterceptor {
     }
 
     /**
-     * 在消息发送后触发.
+     * 在消息发送后触发.这里发送后并不是真正的发送，其实只是构造了整个发送的逻辑流{@link Flux}(参数 reply),
      *
      * @param device  设备操作接口
      * @param message 源消息
@@ -52,4 +52,11 @@ public interface DeviceMessageSenderInterceptor {
         return composite;
     }
 
+    /**
+     * 排序序号,值小的在前,大的再后.
+     * @return 序号
+     */
+    default int getOrder(){
+        return Integer.MAX_VALUE;
+    }
 }

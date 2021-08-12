@@ -1,6 +1,7 @@
 package org.jetlinks.core.metadata;
 
 import com.alibaba.fastjson.JSONObject;
+import io.vavr.Function3;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -133,27 +134,62 @@ public class SimpleDeviceMetadata implements DeviceMetadata {
 
     }
 
+    private <V extends Metadata> void doMerge(Map<String, V> map,
+                                              V value,
+                                              Function3<V, V, MergeOption[], V> mergeFunction,
+                                              MergeOption... options) {
+
+        map.compute(value.getId(), (k, old) -> {
+            if (old == null) {
+                return value;
+            }
+            //忽略已存在的物模型
+            if (MergeOption.has(MergeOption.ignoreExists, options)) {
+                return old;
+            }
+            return mergeFunction.apply(old, value, options);
+        });
+
+    }
+
     @Override
-    public DeviceMetadata merge(DeviceMetadata metadata) {
+    public DeviceMetadata merge(DeviceMetadata metadata, MergeOption... options) {
         SimpleDeviceMetadata deviceMetadata = new SimpleDeviceMetadata();
         deviceMetadata.setId(metadata.getId());
         deviceMetadata.setName(metadata.getName());
         deviceMetadata.setDescription(metadata.getDescription());
         deviceMetadata.setExpands(metadata.getExpands());
+
+
+        if (MergeOption.has(MergeOption.overwriteProperty, options)) {
+            deviceMetadata.properties.clear();
+        }
+
         for (PropertyMetadata property : metadata.getProperties()) {
-            deviceMetadata.properties.put(property.getId(), property);
+            doMerge(deviceMetadata.properties, property, PropertyMetadata::merge, options);
+        }
+        //属性过滤
+        if (MergeOption.PropertyFilter.has(options)) {
+            Map<String, PropertyMetadata> temp = new LinkedHashMap<>(deviceMetadata.properties);
+            deviceMetadata.properties.clear();
+            for (Map.Entry<String, PropertyMetadata> entry : temp.entrySet()) {
+                if (MergeOption.PropertyFilter.doFilter(entry.getValue(), options)) {
+                    deviceMetadata.properties.put(entry.getKey(), entry.getValue());
+                }
+            }
         }
 
         for (FunctionMetadata func : metadata.getFunctions()) {
-            deviceMetadata.functions.put(func.getId(), func);
+            doMerge(deviceMetadata.functions, func, FunctionMetadata::merge, options);
         }
 
         for (EventMetadata event : metadata.getEvents()) {
-            deviceMetadata.events.put(event.getId(), event);
+            doMerge(deviceMetadata.events, event, EventMetadata::merge, options);
+
         }
 
         for (PropertyMetadata tag : metadata.getTags()) {
-            deviceMetadata.tags.put(tag.getId(), tag);
+            doMerge(deviceMetadata.tags, tag, PropertyMetadata::merge, options);
         }
 
         return deviceMetadata;

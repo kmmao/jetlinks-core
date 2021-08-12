@@ -10,9 +10,12 @@ import org.jetlinks.core.config.ConfigStorage;
 import org.jetlinks.core.config.ConfigStorageManager;
 import org.jetlinks.core.config.StorageConfigurable;
 import org.jetlinks.core.device.*;
-import org.jetlinks.core.message.DeviceMessageReply;
-import org.jetlinks.core.message.DisconnectDeviceMessage;
+import org.jetlinks.core.enums.ErrorCode;
+import org.jetlinks.core.exception.DeviceOperationException;
+import org.jetlinks.core.message.*;
 import org.jetlinks.core.message.interceptor.DeviceMessageSenderInterceptor;
+import org.jetlinks.core.message.state.DeviceStateCheckMessage;
+import org.jetlinks.core.message.state.DeviceStateCheckMessageReply;
 import org.jetlinks.core.metadata.DeviceMetadata;
 import org.jetlinks.core.utils.IdUtils;
 import org.springframework.util.StringUtils;
@@ -170,15 +173,19 @@ public class DefaultDeviceOperator implements DeviceOperator, StorageConfigurabl
                             .getValue(selfManageState.getKey())
                             .map(val -> val.as(Boolean.class))
                             .orElse(false);
-                    if (isSelfManageState) {
-                        return Mono.just(state);
-                    }
                     String parentGatewayId = values
                             .getValue(DeviceConfigKey.parentGatewayId)
                             .orElse(null);
 
-                    //获取父级设备状态
-                    if (!state.equals(DeviceState.online) && StringUtils.hasText(parentGatewayId)) {
+                    if (getDeviceId().equals(parentGatewayId)) {
+                        log.warn("设备[{}]存在循环依赖", parentGatewayId);
+                        return Mono.just(state);
+                    }
+                    if (isSelfManageState) {
+                        return Mono.just(state);
+                    }
+                    //获取网关设备状态
+                    if (StringUtils.hasText(parentGatewayId)) {
                         return registry
                                 .getDevice(parentGatewayId)
                                 .flatMap(DeviceOperator::getState);
@@ -219,21 +226,62 @@ public class DefaultDeviceOperator implements DeviceOperator, StorageConfigurabl
                                         .defaultIfEmpty(state);
                             }
 
-                            //子设备是否自己管理状态
-                            if (values.getValue(selfManageState).orElse(false)) {
-                                return Mono.just(state);
-                            }
-
                             //网关设备ID
                             String parentGatewayId = values
                                     .getValue(DeviceConfigKey.parentGatewayId)
                                     .orElse(null);
 
+                            if (getDeviceId().equals(parentGatewayId)) {
+                                log.warn("设备[{}]存在循环依赖", parentGatewayId);
+                                return Mono.just(state);
+                            }
+                            boolean isSelfManageState = values.getValue(selfManageState).orElse(false);
                             //如果关联了上级网关设备则获取父设备状态
                             if (StringUtils.hasText(parentGatewayId)) {
                                 return registry
                                         .getDevice(parentGatewayId)
-                                        .flatMap(DeviceOperator::checkState);
+                                        .flatMap(device -> {
+                                            //不是状态自管理则直接返回网关的状态
+                                            if (!isSelfManageState) {
+                                                return device.checkState();
+                                            }
+                                            //发送设备状态检查指令给网关设备
+                                            return device
+                                                    .messageSender()
+                                                    .<ChildDeviceMessageReply>
+                                                            send(ChildDeviceMessage
+                                                                         .create(parentGatewayId,
+                                                                                 DeviceStateCheckMessage.create(getDeviceId())
+                                                                         )
+                                                                         .addHeader(Headers.timeout, 5000L)
+                                                    )
+                                                    .singleOrEmpty()
+                                                    .map(msg -> {
+                                                        if (msg.getChildDeviceMessage() instanceof DeviceStateCheckMessageReply) {
+                                                            return ((DeviceStateCheckMessageReply) msg.getChildDeviceMessage())
+                                                                    .getState();
+                                                        }
+                                                        log.warn("子设备状态检查返回消息错误{}", msg);
+                                                        //网关设备在线,只是返回了错误的消息,所以也认为网关设备在线
+                                                        return DeviceState.online;
+                                                    })
+                                                    .onErrorResume(err -> {
+                                                        if (err instanceof DeviceOperationException) {
+                                                            ErrorCode code = ((DeviceOperationException) err).getCode();
+                                                            if (code == ErrorCode.CLIENT_OFFLINE) {
+                                                                //父设备已经离线了
+                                                                return Mono.just(DeviceState.offline);
+                                                            } else if (code == ErrorCode.UNSUPPORTED_MESSAGE) {
+                                                                //不支持的消息，则认为父设备是在线的，只是协议包不支持处理。
+                                                                return Mono.just(DeviceState.online);
+                                                            }
+                                                        }
+                                                        //发送返回错误,但是配置了状态自管理,直接返回原始状态
+                                                        return Mono.just(state);
+                                                    });
+                                        })
+                                        //没有父设备?则认为离线
+                                        .defaultIfEmpty(state.equals(DeviceState.online) ? DeviceState.offline : state);
                             }
 
                             //如果是在线状态,则改为离线,否则保持状态不变
@@ -302,7 +350,7 @@ public class DefaultDeviceOperator implements DeviceOperator, StorageConfigurabl
     public Mono<Boolean> offline() {
         return this
                 .setConfigs(
-                        selfManageState.value(true),
+                        //selfManageState.value(true),
                         connectionServerId.value(""),
                         sessionId.value(""),
                         ConfigKey.of("offlineTime").value(System.currentTimeMillis()),
@@ -315,7 +363,7 @@ public class DefaultDeviceOperator implements DeviceOperator, StorageConfigurabl
     public Mono<Boolean> online(String serverId, String sessionId, String address) {
         return this
                 .setConfigs(
-                        selfManageState.value(true),
+                        //  selfManageState.value(true),
                         connectionServerId.value(serverId),
                         DeviceConfigKey.sessionId.value(sessionId),
                         ConfigKey.of("address").value(address),
@@ -394,7 +442,9 @@ public class DefaultDeviceOperator implements DeviceOperator, StorageConfigurabl
         METADATA_UPDATER.set(this, null);
         METADATA_TIME_UPDATER.set(this, -1);
         return removeConfigs(metadata, lastMetadataTimeKey)
-                .then();
+                .then(this.getProtocol()
+                          .flatMap(support -> support.onDeviceMetadataChanged(this))
+                );
     }
 
     @Override
@@ -402,6 +452,16 @@ public class DefaultDeviceOperator implements DeviceOperator, StorageConfigurabl
         Map<String, Object> configs = new HashMap<>(conf);
         if (conf.containsKey(metadata.getKey())) {
             configs.put(lastMetadataTimeKey.getKey(), lastMetadataTime = System.currentTimeMillis());
+
+            return StorageConfigurable.super
+                    .setConfigs(configs)
+                    .doOnNext(suc -> {
+                        this.metadataCache = null;
+                    })
+                    .then(this.getProtocol()
+                              .flatMap(support -> support.onDeviceMetadataChanged(this))
+                    )
+                    .thenReturn(true);
         }
         return StorageConfigurable.super.setConfigs(configs);
     }

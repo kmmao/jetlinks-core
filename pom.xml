@@ -5,7 +5,7 @@
     <parent>
         <artifactId>jetlinks</artifactId>
         <groupId>org.jetlinks</groupId>
-        <version>1.1.6-SNAPSHOT</version>
+        <version>1.1.8-SNAPSHOT</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -79,6 +79,11 @@
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>guava</artifactId>
             <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.synchronoss.cloud</groupId>
+            <artifactId>nio-multipart-parser</artifactId>
         </dependency>
 
     </dependencies>
